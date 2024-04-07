@@ -1285,3 +1285,234 @@ struct ip_mreq {
 
 ## 标准 I/O 函数的两个优点
 
+标准 I/O 函数的两大优点：
+
+-   标准 I/O 函数具有良好的移植性。
+-   标准 I/O 函数可以利用缓冲提高性能。
+
+<img src="https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240403150012600.png" alt="image-20240403150012600" style="zoom:67%;" />
+
+设置缓冲的主要目的是为了提高性能，但套接字中的缓冲主要是为了实现 TCP 协议而设立的。
+
+实际上，缓冲并非在所有情况下都能带来卓越的性能。但需要传输的数据越多，有无缓冲带来的性能差异越大。
+
+可以通过以下两种角度说明性能的提高：
+
+-   传输的数据量
+-   数据向输出缓冲移动的次数
+
+## 标准 I/O 函数的几个缺点
+
+-   不容易进行双向通信
+-   有时可能频繁调用 `fflush` 函数
+-   需要以 `FILE` 结构体指针的形式返回文件描述符
+
+# 15.2 使用标准 I/O 函数
+
+## 利用 `fdopen` 函数转换为 `FILE` 结构体指针
+
+```c
+#include <stdio.h>
+
+// fildes: 需要转换的文件描述符
+// mode: 将要创建的 FILE 结构体指针的模式信息
+FILE* fdopen(int fildes, const char* mode);
+// 成功时返回转换的 FILE 结构体指针，失败时返回 NULL
+```
+
+## 利用 `fileno` 函数转换为文件描述符
+
+```c
+#include <stdio.h>
+
+int fileno(FILE* stream);
+// 成功时返回转换后的文件描述符，失败时返回-1
+```
+
+# 16.1 分离 I/O 流
+
+## 2 次 I/O 流分离
+
+第 10 章的“TCP/IP 过程分离”，通过调用 `fork` 函数复制出 1 个文件描述符，以区分输入和输出中使用的文件描述符。
+
+第 15 章的分离，通过 2 次 `fdopen` 函数的调用，创建读模式 `FILE` 指针（`FILE` 结构体指针）和写模式 `FILE` 指针。
+
+## 分离“流”的好处
+
+第 10 章的“流”分离目的：
+
+-   通过分开输入过程和输出过程降低实现难度。
+-   与输入无关的输出操作可以提高速度。
+
+第 15 章的“流”分离目的：
+
+-   为了将 `FILE` 指针按读模式和写模式加以区分。
+-   可以通过区分读写模式降低实现难度。
+-   通过区分 I/O 缓冲提高缓冲性能。
+
+# 16.2 文件描述符的复制和半关闭
+
+## 终止“流”时无法半关闭的原因
+
+下图是 `sep.serv.c` 示例中的 2 个 `FILE` 指针、文件描述符及套接字之间的关系。
+
+<img src="https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240406222211967.png" alt="image-20240406222211967" style="zoom:50%;" />
+
+从图中可以看到，示例中的读模式 `FILE` 指针和写模式 `FILE` 指针都是基于同一文件描述符创建的。
+
+因此，针对任意一个 `FILE` 指针调用 `fclose` 函数时都会关闭文件描述符，也就终止套接字。
+
+<img src="https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240406222445921.png" alt="image-20240406222445921" style="zoom:50%;" />
+
+从上图可以看到，销毁套接字时再也无法进行数据交换。
+
+<img src="https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240406222611580.png" alt="image-20240406222611580" style="zoom:50%;" />
+
+如上图所示，复制后另外创建一个文件描述符，然后利用各自的文件描述符生成读模式 `FILE` 指针和写模式 `FILE` 指针。
+
+也就是说，针对写模式 `FILE` 指针调用 `fclose` 函数时，只能销毁与该 `FILE` 指针相关的文件描述符，无法销毁套接字。
+
+<img src="https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240406222756926.png" alt="image-20240406222756926" style="zoom:50%;" />
+
+## 复制文件描述符
+
+![image-20240406232551509](https://raw.githubusercontent.com/Penguin-SAMA/PicGo/main/image-20240406232551509.png)
+
+上图给出的是同一进城内存在 2 个文件描述符可以同时访问文件的情况。
+
+此处的“复制”具有如下含义：
+
+>   为了访问同一文件或套接字，创建另一个文件描述符。
+
+## dup & dup2
+
+```c
+#include <unistd.h>
+
+// fildes: 需要复制的文件描述符
+// fildes2: 明确指定的文件描述符整数值
+int dup(int fildes);
+int dup2(int fildes, int fildes2);
+// 成功时返回复制的文件描述符，失败时返回-1
+```
+
+`dup2` 函数明确指定复制的文件描述符整数值。向其传递大于 0 且小于进程能生成的最大文件描述符值时，该值将成为复制出的文件描述符值。
+
+# 17.1 epoll 理解及应用
+
+## 基于 select 的 I/O 复用技术速度慢的原因
+
+-   调用 `select` 函数后常见的针对所有文件描述符的循环语句。
+-   每次调用 `select` 函数时都需要向该函数传递监视对象信息。
+
+调用 `select` 函数后，并不是把发生变化的文件描述符单独集中到一起，而是通过观察作为监视对象的 `fd_set` 变量的变化，找出发生变化的文件描述符，因此无法避免针对所有监视对象的循环语句。
+
+`select` 函数的这一缺点可以通过如下方式弥补：
+
+>   仅向操作系统传递 1 次监视对象，监视范围或内容发生变化时只通知发生变化的事项。
+
+这样就无需每次调用 `select` 函数时都向操作系统传递监视对象信息，但前提是操作系统支持这种处理方式。
+
+## select 也有优点
+
+只要满足或要求如下两个条件，即使在 Linux 平台也不应拘泥于 epoll。
+
+-   服务器端接入者少。
+-   程序应具有兼容性。
+
+## 实现 epoll 时必要的函数和结构体
+
+能够克服 `select` 函数缺点的 `epoll` 函数具有如下优点，这些优点正好与之前的 `select` 函数缺点相反。
+
+-   无需编写以监视状态变化为目的的针对所有文件描述符的循环语句。
+-   调用对应于 `select` 函数的 `epoll_wait` 函数时无需每次传递监视对象信息。
+
+下面是 `epoll` 服务器端实现中需要的 3 个函数：
+
+-   `epoll_create`：创建保存 `epoll` 文件描述符的空间。
+-   `epoll_ctl`：向空间注册并注销文件描述符。
+-   `epoll_wait`：与 `select` 函数类似，等待文件描述符发生变化。
+
+`select` 方式中为了保存监视对象文件描述符，直接声明了 `fd_set` 变量。但 `epoll` 方式下由操作系统负责保存监视对象文件描述符，因此需要向操作系统请求创建保存文件描述符的空间，此时使用的函数就是 `epoll_create`。
+
+此外，为了添加和删除监视对象文件描述符，`select` 方式中需要 `FD_SET`, `FD_CLR` 函数。但在 `epoll` 方式中，通过 `epoll_ctl` 函数请求操作系统完成。最后，`select` 方式下调用 `select` 函数等待文件描述符的变化，而 `epoll` 中调用 `epoll_wait` 函数。还有，`seletc` 方式中通过 `fd_set` 变量查看监视对象的状态变化，而`epoll` 方式中通过如下结构体 `epoll_event` 将发生变化的文件描述符单独集中到一起。
+
+```c
+struct epoll_event
+{
+    __uint32_t events;
+    epoll_data_t data;
+}
+
+typedef union epoll_data{
+    void* ptr;
+    int fd;
+    __uint32_t u32;
+    __uint64_t u64;
+} epoll_data_t;
+```
+
+## epoll_create
+
+```c
+#include <sys/epoll.h>
+
+// size：epoll 实例的大小
+int epoll_create(int size);
+// 成功时返回 epoll 文件描述符，失败时返回-1
+```
+
+调用 `epoll_create` 函数时创建的文件描述符保存空间称为“epoll 例程”。
+
+`epoll_create` 函数创建的资源与套接字相同，也由操作系统管理。因此，该函数和创建套接字的情况相同，也会返回文件描述符。
+
+## epoll_ctl
+
+```c
+#include <sys/epoll.h>
+
+// epfd：用于注册监视对象的 epoll 例程的文件描述符。
+// op：用于指定监视对象的添加、删除或更改等操作。
+// fd：需要注册的监视对象文件描述符。
+// event：监视对象的事件类型。
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+// 成功时返回0，失败时返回-1。
+```
+
+示例：`epoll_ctl(A, EPOLL_CTL_ADD, B, C);`
+
+含义：“epoll 例程 A 中注册文件描述符 B，主要目的是监视参数 C 中的事件。”
+
+示例：`epoll_ctl(A, EPOLL_CTL_DEL, B, NULL);`
+
+含义：“从 epoll 例程 A 中删除文件描述符 B。”
+
+以下是向 `epoll_ctl` 第二个参数传递的常量及含义：
+
+-   `EPOLL_CTL_ADD`：将文件描述符注册到 epoll 例程。
+-   `EPOLL_CTL_DEL`：从 epoll 例程中删除文件描述符。
+-   `EPOLL_CTL_MOD`：更改注册的文件描述符的关注事件发生情况。
+
+下面是 `epoll_event` 的成员 `events` 中可以保存的常量及所指的事件类型：
+
+-   `EPOLLIN`：需要读取数据的情况。
+-   `EPOLLOUT`：输出缓冲为空，可以立即发送数据的情况。
+-   `EPOLLPRI`：收到 OOB 数据的情况。
+-   `EPOLLREHUP`：断开连接或半关闭的情况。
+-   `EPOLLERR`：发生错误的情况。
+-   `EPOLLET`：以边缘触发的方式得到事件通知。
+-   `EPOLLONESHOT`：发生一次事件后，相应文件描述符不再收到事件通知。
+
+## epoll_wait
+
+```c
+#include <sys/epoll.h>
+
+// epfd：表示事件发生监视范围的 epoll 例程的文件描述符。
+// events：保存发生事件的文件描述符集合的结构体地址值。
+// maxevents：第二个参数中可以保存的最大事件数。
+// timeout：以 1/1000 秒为单位的等待时间，传递 -1 时，一直等待直到发生事件。
+int epoll_wait(int epfd, struct epoll_event* events, int maxevents, int timeout);
+// 成功时返回发生事件的文件描述符数，失败时返回-1。
+```
+
